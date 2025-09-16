@@ -384,12 +384,18 @@
             } else if (type.startsWith('video/')) {
                 const video = document.createElement('video');
                 video.controls = true;
-                video.autoplay = true;
-                video.muted = true;
                 video.loop = true;
                 activeObjectUrl = URL.createObjectURL(file);
                 video.src = activeObjectUrl;
                 previewContainer.appendChild(video);
+
+                const playPromise = video.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(error => {
+                        video.muted = true;
+                        video.play();
+                    });
+                }
             } else {
                 previewContainer.innerHTML = `<p>Preview not available for ${file.name} (${type || 'unknown type'}).</p>`;
             }
