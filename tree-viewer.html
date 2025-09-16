@@ -206,9 +206,20 @@
             return li.file || null;
         }
 
+        async function updatePreviewableItems() {
+            const allFiles = Array.from(treeContainer.querySelectorAll('li.file'));
+            const newPreviewableItems = [];
+            for (const li of allFiles) {
+                const file = await getFileFromLi(li);
+                if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
+                    newPreviewableItems.push(li);
+                }
+            }
+            previewableItems = newPreviewableItems;
+        }
+
         async function buildTreeFromSource(source) {
             clearUIState();
-            let rootNode;
             if (isModernApi) {
                 const rootLi = await modern_createTreeElement(source);
                 rootLi.classList.add('expanded');
@@ -219,18 +230,10 @@
                 treeContainer.appendChild(rootUl);
                 await modern_populateDirectory(source, rootLi.querySelector('ul'));
             } else {
-                rootNode = fallback_buildFileTree(source);
+                const rootNode = fallback_buildFileTree(source);
                 fallback_renderTree(rootNode, treeContainer);
             }
-
-            const allFiles = Array.from(treeContainer.querySelectorAll('li.file'));
-            previewableItems = [];
-            for (const li of allFiles) {
-                const file = await getFileFromLi(li);
-                if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
-                    previewableItems.push(li);
-                }
-            }
+            await updatePreviewableItems();
         }
 
         function fallback_buildFileTree(files) {
@@ -357,6 +360,7 @@
                 document.title = isModernApi ? li.handle.name : li.node.name;
                 if (isModernApi && li.classList.contains('expanded') && li.querySelector('ul')?.dataset.loaded !== 'true') {
                     await modern_populateDirectory(li.handle, li.querySelector('ul'));
+                    await updatePreviewableItems();
                 }
                 showFolderGrid(li);
             } else if (li.classList.contains('file')) {
