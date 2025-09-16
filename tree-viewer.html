@@ -147,6 +147,10 @@
             cursor: pointer;
             overflow: hidden;
         }
+        .grid-item.selected {
+            outline: 3px solid var(--selected-bg);
+            outline-offset: -3px;
+        }
         .grid-item img, .grid-item video {
             width: 100%;
             height: 100%;
@@ -331,17 +335,23 @@
         });
 
         document.addEventListener('keydown', (e) => {
-            if (currentItemIndex === -1 || !['ArrowRight', 'ArrowLeft'].includes(e.key)) return;
-
-            e.preventDefault();
-            let nextIndex = currentItemIndex;
-            if (e.key === 'ArrowRight') {
-                nextIndex = (currentItemIndex + 1) % previewableItems.length;
-            } else if (e.key === 'ArrowLeft') {
-                nextIndex = (currentItemIndex - 1 + previewableItems.length) % previewableItems.length;
+            if (currentItemIndex > -1 && e.key === 'Escape') {
+                e.preventDefault();
+                const currentFileLi = previewableItems[currentItemIndex];
+                const parentFolderLi = currentFileLi.closest('li.folder');
+                if (parentFolderLi) {
+                    showFolderGrid(parentFolderLi, currentFileLi);
+                }
+            } else if (currentItemIndex > -1 && ['ArrowRight', 'ArrowLeft'].includes(e.key)) {
+                e.preventDefault();
+                let nextIndex = currentItemIndex;
+                if (e.key === 'ArrowRight') {
+                    nextIndex = (currentItemIndex + 1) % previewableItems.length;
+                } else if (e.key === 'ArrowLeft') {
+                    nextIndex = (currentItemIndex - 1 + previewableItems.length) % previewableItems.length;
+                }
+                selectAndPreviewItem(nextIndex);
             }
-            
-            selectAndPreviewItem(nextIndex);
         });
 
         function selectAndPreviewItem(index) {
@@ -401,7 +411,7 @@
             }
         }
         
-        function showFolderGrid(folderLi) {
+        function showFolderGrid(folderLi, selectedFileLi = null) {
             if (thumbnailObserver) {
                 thumbnailObserver.disconnect();
             }
@@ -463,6 +473,15 @@
             });
 
             previewContainer.appendChild(gridContainer);
+
+            if (selectedFileLi) {
+                const gridItems = Array.from(gridContainer.querySelectorAll('.grid-item'));
+                const selectedGridItem = gridItems.find(item => item.fileLi === selectedFileLi);
+                if (selectedGridItem) {
+                    selectedGridItem.classList.add('selected');
+                    selectedGridItem.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+                }
+            }
         }
     </script>
 </body>
