@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Viewer</title>
+    <style>
+        :root {
+            --border-color: #333;
+            --background-color: #121212;
+            --text-color: #e0e0e0;
+            --sidebar-bg: #1e1e1e;
+            --button-bg: #333;
+            --button-hover-bg: #444;
+            --selected-bg: #005fcc;
+            --selected-text: #ffffff;
+            --hover-bg: #2a2d2e;
+        }
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            overflow: hidden;
+        }
+        #app-container {
+            display: flex;
+            height: 100vh;
+        }
+        #sidebar {
+            width: 350px;
+            min-width: 250px;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            resize: horizontal;
+            overflow: auto;
+        }
+        #folder-picker-label {
+            display: block;
+            text-align: center;
+            width: calc(100% - 20px);
+            margin: 10px;
+            padding: 10px;
+            cursor: pointer;
+            background-color: var(--button-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        #folder-picker-label:hover {
+            background-color: var(--button-hover-bg);
+        }
+        #folder-picker-input {
+            display: none;
+        }
+        #tree-container {
+            flex-grow: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 0 10px 10px 10px;
+        }
+        #preview-container {
+            flex-grow: 1;
+            padding: 10px;
+            overflow: auto;
+        }
+        #preview-container.view-mode-single {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #preview-container img, #preview-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #tree-container ul {
+            list-style: none;
+            padding-left: 18px;
+            margin: 0;
+        }
+        #tree-container li {
+            padding: 1px 0;
+            user-select: none;
+        }
+        .entry-name {
+            display: flex;
+            align-items: center;
+            padding: 3px 5px;
+            border-radius: 3px;
+            cursor: pointer;
+            width: 100%;
+            overflow: hidden;
+        }
+        .entry-name:hover {
+            background-color: var(--hover-bg);
+        }
+        li.selected > .entry-name {
+            background-color: var(--selected-bg);
+            color: var(--selected-text);
+        }
+        .entry-text {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .toggle {
+            display: inline-block;
+            width: 15px;
+            text-align: center;
+            font-size: 0.8em;
+            margin-right: 3px;
+            flex-shrink: 0;
+        }
+        .folder > .entry-name > .toggle::before {
+            content: '►';
+        }
+        .folder.expanded > .entry-name > .toggle::before {
+            content: '▼';
+        }
+        .file > .entry-name {
+            padding-left: 18px;
+        }
+        .folder > ul {
+            display: none;
+        }
+        .folder.expanded > ul {
+            display: block;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            width: 100%;
+            align-content: start;
+        }
+        .grid-item {
+            position: relative;
+            aspect-ratio: 1 / 1;
+            background-color: var(--sidebar-bg);
+            border-radius: 4px;
+            cursor: pointer;
+            overflow: hidden;
+        }
+        .grid-item img, .grid-item video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <div id="sidebar">
+            <label id="folder-picker-label" for="folder-picker-input">Select Folder</label>
+            <input type="file" id="folder-picker-input" webkitdirectory>
+            <div id="tree-container"></div>
+        </div>
+        <div id="preview-container" class="view-mode-single">
+            <p>Select a folder to begin.</p>
+        </div>
+    </div>
+    <script>
+        const folderPicker = document.getElementById('folder-picker-input');
+        const treeContainer = document.getElementById('tree-container');
+        const previewContainer = document.getElementById('preview-container');
+        const originalTitle = document.title;
+
+        let activeObjectUrl = null;
+        let previewableItems = [];
+        let currentItemIndex = -1;
+        let thumbnailObserver = null;
+        
+        const ignoreNames = new Set([
+            '$RECYCLE.BIN',
+            'System Volume Information',
+            'Thumbs.db'
+        ]);
+
+        folderPicker.addEventListener('change', (event) => {
+            const files = event.target.files;
+            if (!files.length) return;
+
+            document.title = originalTitle;
+            treeContainer.innerHTML = 'Building tree...';
+            previewContainer.className = 'view-mode-single';
+            previewContainer.innerHTML = '<p>Select a file to preview.</p>';
+            
+            previewableItems = [];
+            currentItemIndex = -1;
+
+            setTimeout(() => {
+                const fileTree = buildFileTree(files);
+                renderTree(fileTree, treeContainer);
+                const allFiles = Array.from(treeContainer.querySelectorAll('li.file'));
+                previewableItems = allFiles.filter(li => {
+                    const file = li.file;
+                    return file && (file.type.startsWith('image/') || file.type.startsWith('video/'));
+                });
+            }, 50);
+        });
+        
+        function buildFileTree(files) {
+            const root = { type: 'directory', children: {} };
+            
+            const firstFile = Array.from(files).find(f => !f.webkitRelativePath.split('/').some(part => part.startsWith('.') || ignoreNames.has(part)));
+            if (!firstFile) {
+                treeContainer.innerHTML = '<p>No visible files found.</p>';
+                return null;
+            }
+            const rootFolderName = firstFile.webkitRelativePath.split('/')[0];
+            root.name = rootFolderName;
+
+            for (const file of files) {
+                const pathParts = file.webkitRelativePath.split('/');
+                const isHidden = pathParts.some(part => part.startsWith('.') || ignoreNames.has(part));
+                if (isHidden) {
+                    continue;
+                }
+
+                let currentNode = root;
+
+                for (let i = 1; i < pathParts.length; i++) {
+                    const part = pathParts[i];
+                    const isLastPart = i === pathParts.length - 1;
+
+                    if (!currentNode.children[part]) {
+                        if (isLastPart) {
+                             currentNode.children[part] = { type: 'file', file: file, name: part };
+                        } else {
+                             currentNode.children[part] = { type: 'directory', children: {}, name: part };
+                        }
+                    }
+                    currentNode = currentNode.children[part];
+                }
+            }
+            return root;
+        }
+
+        function renderTree(node, parentElement) {
+            if (!node) return;
+            parentElement.innerHTML = '';
+            const rootUl = document.createElement('ul');
+            rootUl.style.paddingLeft = '0';
+            
+            const rootLi = createTreeElement(node);
+            rootLi.classList.add('expanded');
+            
+            const sortedChildren = Object.values(node.children).sort((a, b) => {
+                if (a.type === b.type) {
+                    return a.name.localeCompare(b.name, undefined, { numeric: true });
+                }
+                return a.type === 'directory' ? -1 : 1;
+            });
+
+            const childrenUl = rootLi.querySelector('ul');
+            for (const childNode of sortedChildren) {
+                const childLi = createTreeElement(childNode);
+                childrenUl.appendChild(childLi);
+            }
+
+            rootUl.appendChild(rootLi);
+            parentElement.appendChild(rootUl);
+        }
+
+        function createTreeElement(node) {
+            const li = document.createElement('li');
+            li.node = node;
+            const entryName = document.createElement('span');
+            entryName.className = 'entry-name';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'entry-text';
+            nameSpan.textContent = node.name;
+            
+            if (node.type === 'directory') {
+                li.classList.add('folder');
+                const toggle = document.createElement('span');
+                toggle.className = 'toggle';
+                entryName.appendChild(toggle);
+                entryName.appendChild(nameSpan);
+                li.appendChild(entryName);
+
+                const ul = document.createElement('ul');
+                const sortedChildren = Object.values(node.children).sort((a, b) => {
+                    if (a.type === b.type) return a.name.localeCompare(b.name, undefined, { numeric: true });
+                    return a.type === 'directory' ? -1 : 1;
+                });
+                for (const childNode of sortedChildren) {
+                    ul.appendChild(createTreeElement(childNode));
+                }
+                li.appendChild(ul);
+            } else {
+                li.classList.add('file');
+                li.file = node.file;
+                entryName.appendChild(nameSpan);
+                li.appendChild(entryName);
+            }
+            return li;
+        }
+        
+        treeContainer.addEventListener('click', (e) => {
+            const entryName = e.target.closest('.entry-name');
+            if (!entryName) return;
+            const li = entryName.parentElement;
+            if (!li) return;
+
+            const previouslySelected = document.querySelector('#tree-container .selected');
+            if (previouslySelected) {
+                previouslySelected.classList.remove('selected');
+            }
+            li.classList.add('selected');
+            
+            if (li.classList.contains('folder')) {
+                li.classList.toggle('expanded');
+                document.title = li.node.name;
+                showFolderGrid(li);
+            } else if (li.classList.contains('file')) {
+                const index = previewableItems.findIndex(item => item === li);
+                if (index !== -1) {
+                    currentItemIndex = index;
+                } else {
+                    currentItemIndex = -1;
+                }
+                showPreview(li.file);
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (currentItemIndex === -1 || !['ArrowRight', 'ArrowLeft'].includes(e.key)) return;
+
+            e.preventDefault();
+            let nextIndex = currentItemIndex;
+            if (e.key === 'ArrowRight') {
+                nextIndex = (currentItemIndex + 1) % previewableItems.length;
+            } else if (e.key === 'ArrowLeft') {
+                nextIndex = (currentItemIndex - 1 + previewableItems.length) % previewableItems.length;
+            }
+            
+            selectAndPreviewItem(nextIndex);
+        });
+
+        function selectAndPreviewItem(index) {
+            if (index < 0 || index >= previewableItems.length) return;
+
+            currentItemIndex = index;
+            const li = previewableItems[index];
+
+            const previouslySelected = document.querySelector('#tree-container .selected');
+            if (previouslySelected) {
+                previouslySelected.classList.remove('selected');
+            }
+            li.classList.add('selected');
+            
+            li.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+            
+            showPreview(li.file);
+        }
+
+        function showPreview(file) {
+            if (thumbnailObserver) {
+                thumbnailObserver.disconnect();
+                thumbnailObserver = null;
+            }
+            document.title = file.name;
+            if (activeObjectUrl) {
+                URL.revokeObjectURL(activeObjectUrl);
+                activeObjectUrl = null;
+            }
+            previewContainer.innerHTML = '';
+            previewContainer.className = 'view-mode-single';
+
+            const type = file.type;
+            if (type.startsWith('image/')) {
+                const img = document.createElement('img');
+                activeObjectUrl = URL.createObjectURL(file);
+                img.src = activeObjectUrl;
+                img.alt = file.name;
+                previewContainer.appendChild(img);
+            } else if (type.startsWith('video/')) {
+                const video = document.createElement('video');
+                video.controls = true;
+                video.autoplay = true;
+                video.muted = true;
+                video.loop = true;
+                activeObjectUrl = URL.createObjectURL(file);
+                video.src = activeObjectUrl;
+                previewContainer.appendChild(video);
+            } else {
+                previewContainer.innerHTML = `<p>Preview not available for ${file.name} (${type || 'unknown type'}).</p>`;
+            }
+        }
+        
+        function showFolderGrid(folderLi) {
+            if (thumbnailObserver) {
+                thumbnailObserver.disconnect();
+            }
+            previewContainer.innerHTML = '';
+            previewContainer.className = 'view-mode-grid';
+            
+            const gridContainer = document.createElement('div');
+            gridContainer.className = 'grid-container';
+
+            const childItems = Array.from(folderLi.querySelector('ul').children);
+            const mediaItems = childItems.filter(li => li.file && (li.file.type.startsWith('image/') || li.file.type.startsWith('video/')));
+            
+            if (mediaItems.length === 0) {
+                previewContainer.className = 'view-mode-single';
+                previewContainer.innerHTML = '<p>No previewable files in this folder.</p>';
+                return;
+            }
+
+            thumbnailObserver = new IntersectionObserver((entries, observer) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const gridItem = entry.target;
+                        const file = gridItem.fileLi.file;
+                        
+                        let mediaElement;
+                        const type = file.type;
+                        if (type.startsWith('image/')) {
+                            mediaElement = document.createElement('img');
+                        } else {
+                            mediaElement = document.createElement('video');
+                            mediaElement.muted = true;
+                            mediaElement.loop = true;
+                            mediaElement.playsinline = true;
+                            mediaElement.play();
+                        }
+                        mediaElement.src = URL.createObjectURL(file);
+                        gridItem.appendChild(mediaElement);
+                        observer.unobserve(gridItem);
+                    }
+                });
+            }, { root: previewContainer, rootMargin: '0px 0px 200px 0px' });
+
+            mediaItems.forEach(li => {
+                const gridItem = document.createElement('div');
+                gridItem.className = 'grid-item';
+                gridItem.fileLi = li;
+                gridContainer.appendChild(gridItem);
+                thumbnailObserver.observe(gridItem);
+            });
+            
+            gridContainer.addEventListener('click', e => {
+                const gridItem = e.target.closest('.grid-item');
+                if (gridItem) {
+                    const index = previewableItems.findIndex(item => item === gridItem.fileLi);
+                    if (index !== -1) {
+                        selectAndPreviewItem(index);
+                    }
+                }
+            });
+
+            previewContainer.appendChild(gridContainer);
+        }
+    </script>
+</body>
+</html>
