@@ -39,8 +39,8 @@
             resize: horizontal;
             overflow: auto;
         }
-        #folder-picker-label {
-            display: block;
+        #folder-picker-label, #select-folder-btn {
+            display: none;
             text-align: center;
             width: calc(100% - 20px);
             margin: 10px;
@@ -52,7 +52,7 @@
             border-radius: 4px;
             font-size: 14px;
         }
-        #folder-picker-label:hover {
+        #folder-picker-label:hover, #select-folder-btn:hover {
             background-color: var(--button-hover-bg);
         }
         #folder-picker-input {
@@ -161,6 +161,7 @@
 <body>
     <div id="app-container">
         <div id="sidebar">
+            <button id="select-folder-btn">Select Folder</button>
             <label id="folder-picker-label" for="folder-picker-input">Select Folder</label>
             <input type="file" id="folder-picker-input" webkitdirectory>
             <div id="tree-container"></div>
@@ -170,11 +171,14 @@
         </div>
     </div>
     <script>
-        const folderPicker = document.getElementById('folder-picker-input');
+        const selectFolderBtn = document.getElementById('select-folder-btn');
+        const folderPickerInput = document.getElementById('folder-picker-input');
+        const folderPickerLabel = document.getElementById('folder-picker-label');
         const treeContainer = document.getElementById('tree-container');
         const previewContainer = document.getElementById('preview-container');
         const originalTitle = document.title;
-
+        
+        let isModernApi = false;
         let activeObjectUrl = null;
         let previewableItems = [];
         let currentItemIndex = -1;
@@ -186,59 +190,68 @@
             'Thumbs.db'
         ]);
 
-        folderPicker.addEventListener('change', (event) => {
-            const files = event.target.files;
-            if (!files.length) return;
-
+        function clearUIState() {
             document.title = originalTitle;
             treeContainer.innerHTML = 'Building tree...';
             previewContainer.className = 'view-mode-single';
             previewContainer.innerHTML = '<p>Select a file to preview.</p>';
-            
             previewableItems = [];
             currentItemIndex = -1;
+        }
 
-            setTimeout(() => {
-                const fileTree = buildFileTree(files);
-                renderTree(fileTree, treeContainer);
-                const allFiles = Array.from(treeContainer.querySelectorAll('li.file'));
-                previewableItems = allFiles.filter(li => {
-                    const file = li.file;
-                    return file && (file.type.startsWith('image/') || file.type.startsWith('video/'));
-                });
-            }, 50);
-        });
-        
-        function buildFileTree(files) {
+        async function getFileFromLi(li) {
+            if (isModernApi && li.handle) {
+                return await li.handle.getFile();
+            }
+            return li.file || null;
+        }
+
+        async function buildTreeFromSource(source) {
+            clearUIState();
+            let rootNode;
+            if (isModernApi) {
+                const rootLi = await modern_createTreeElement(source);
+                rootLi.classList.add('expanded');
+                const rootUl = document.createElement('ul');
+                rootUl.style.paddingLeft = '0';
+                rootUl.appendChild(rootLi);
+                treeContainer.innerHTML = '';
+                treeContainer.appendChild(rootUl);
+                await modern_populateDirectory(source, rootLi.querySelector('ul'));
+            } else {
+                rootNode = fallback_buildFileTree(source);
+                fallback_renderTree(rootNode, treeContainer);
+            }
+
+            const allFiles = Array.from(treeContainer.querySelectorAll('li.file'));
+            previewableItems = [];
+            for (const li of allFiles) {
+                const file = await getFileFromLi(li);
+                if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
+                    previewableItems.push(li);
+                }
+            }
+        }
+
+        function fallback_buildFileTree(files) {
             const root = { type: 'directory', children: {} };
-            
             const firstFile = Array.from(files).find(f => !f.webkitRelativePath.split('/').some(part => part.startsWith('.') || ignoreNames.has(part)));
             if (!firstFile) {
                 treeContainer.innerHTML = '<p>No visible files found.</p>';
                 return null;
             }
-            const rootFolderName = firstFile.webkitRelativePath.split('/')[0];
-            root.name = rootFolderName;
+            root.name = firstFile.webkitRelativePath.split('/')[0];
 
             for (const file of files) {
                 const pathParts = file.webkitRelativePath.split('/');
-                const isHidden = pathParts.some(part => part.startsWith('.') || ignoreNames.has(part));
-                if (isHidden) {
+                if (pathParts.some(part => part.startsWith('.') || ignoreNames.has(part))) {
                     continue;
                 }
-
                 let currentNode = root;
-
                 for (let i = 1; i < pathParts.length; i++) {
                     const part = pathParts[i];
-                    const isLastPart = i === pathParts.length - 1;
-
                     if (!currentNode.children[part]) {
-                        if (isLastPart) {
-                             currentNode.children[part] = { type: 'file', file: file, name: part };
-                        } else {
-                             currentNode.children[part] = { type: 'directory', children: {}, name: part };
-                        }
+                        currentNode.children[part] = { type: i === pathParts.length - 1 ? 'file' : 'directory', children: {}, file: file, name: part };
                     }
                     currentNode = currentNode.children[part];
                 }
@@ -246,33 +259,18 @@
             return root;
         }
 
-        function renderTree(node, parentElement) {
+        function fallback_renderTree(node, parentElement) {
             if (!node) return;
             parentElement.innerHTML = '';
             const rootUl = document.createElement('ul');
             rootUl.style.paddingLeft = '0';
-            
-            const rootLi = createTreeElement(node);
+            const rootLi = fallback_createTreeElement(node);
             rootLi.classList.add('expanded');
-            
-            const sortedChildren = Object.values(node.children).sort((a, b) => {
-                if (a.type === b.type) {
-                    return a.name.localeCompare(b.name, undefined, { numeric: true });
-                }
-                return a.type === 'directory' ? -1 : 1;
-            });
-
-            const childrenUl = rootLi.querySelector('ul');
-            for (const childNode of sortedChildren) {
-                const childLi = createTreeElement(childNode);
-                childrenUl.appendChild(childLi);
-            }
-
             rootUl.appendChild(rootLi);
             parentElement.appendChild(rootUl);
         }
 
-        function createTreeElement(node) {
+        function fallback_createTreeElement(node) {
             const li = document.createElement('li');
             li.node = node;
             const entryName = document.createElement('span');
@@ -288,15 +286,10 @@
                 entryName.appendChild(toggle);
                 entryName.appendChild(nameSpan);
                 li.appendChild(entryName);
-
                 const ul = document.createElement('ul');
-                const sortedChildren = Object.values(node.children).sort((a, b) => {
-                    if (a.type === b.type) return a.name.localeCompare(b.name, undefined, { numeric: true });
-                    return a.type === 'directory' ? -1 : 1;
-                });
-                for (const childNode of sortedChildren) {
-                    ul.appendChild(createTreeElement(childNode));
-                }
+                Object.values(node.children)
+                    .sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, undefined, { numeric: true }))
+                    .forEach(childNode => ul.appendChild(fallback_createTreeElement(childNode)));
                 li.appendChild(ul);
             } else {
                 li.classList.add('file');
@@ -306,31 +299,71 @@
             }
             return li;
         }
+
+        async function modern_createTreeElement(handle) {
+            const li = document.createElement('li');
+            li.handle = handle;
+            const entryName = document.createElement('span');
+            entryName.className = 'entry-name';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'entry-text';
+            nameSpan.textContent = handle.name;
+            
+            if (handle.kind === 'directory') {
+                li.classList.add('folder');
+                const toggle = document.createElement('span');
+                toggle.className = 'toggle';
+                entryName.appendChild(toggle);
+                entryName.appendChild(nameSpan);
+                li.appendChild(entryName);
+                const ul = document.createElement('ul');
+                li.appendChild(ul);
+            } else {
+                li.classList.add('file');
+                entryName.appendChild(nameSpan);
+                li.appendChild(entryName);
+            }
+            return li;
+        }
+
+        async function modern_populateDirectory(directoryHandle, parentUl) {
+            const entries = [];
+            for await (const entry of directoryHandle.values()) {
+                if (!entry.name.startsWith('.') && !ignoreNames.has(entry.name)) {
+                    entries.push(entry);
+                }
+            }
+            entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+            for (const entry of entries) {
+                const li = await modern_createTreeElement(entry);
+                parentUl.appendChild(li);
+            }
+            parentUl.dataset.loaded = 'true';
+        }
         
-        treeContainer.addEventListener('click', (e) => {
+        treeContainer.addEventListener('click', async (e) => {
             const entryName = e.target.closest('.entry-name');
             if (!entryName) return;
             const li = entryName.parentElement;
             if (!li) return;
 
             const previouslySelected = document.querySelector('#tree-container .selected');
-            if (previouslySelected) {
-                previouslySelected.classList.remove('selected');
-            }
+            if (previouslySelected) previouslySelected.classList.remove('selected');
             li.classList.add('selected');
             
             if (li.classList.contains('folder')) {
                 li.classList.toggle('expanded');
-                document.title = li.node.name;
+                document.title = isModernApi ? li.handle.name : li.node.name;
+                if (isModernApi && li.classList.contains('expanded') && li.querySelector('ul')?.dataset.loaded !== 'true') {
+                    await modern_populateDirectory(li.handle, li.querySelector('ul'));
+                }
                 showFolderGrid(li);
             } else if (li.classList.contains('file')) {
                 const index = previewableItems.findIndex(item => item === li);
-                if (index !== -1) {
-                    currentItemIndex = index;
-                } else {
-                    currentItemIndex = -1;
-                }
-                showPreview(li.file);
+                currentItemIndex = index > -1 ? index : -1;
+                const file = await getFileFromLi(li);
+                if (file) showPreview(file);
             }
         });
 
@@ -339,48 +372,34 @@
                 e.preventDefault();
                 const currentFileLi = previewableItems[currentItemIndex];
                 const parentFolderLi = currentFileLi.closest('li.folder');
-                if (parentFolderLi) {
-                    showFolderGrid(parentFolderLi, currentFileLi);
-                }
+                if (parentFolderLi) showFolderGrid(parentFolderLi, currentFileLi);
             } else if (currentItemIndex > -1 && ['ArrowRight', 'ArrowLeft'].includes(e.key)) {
                 e.preventDefault();
                 let nextIndex = currentItemIndex;
-                if (e.key === 'ArrowRight') {
-                    nextIndex = (currentItemIndex + 1) % previewableItems.length;
-                } else if (e.key === 'ArrowLeft') {
-                    nextIndex = (currentItemIndex - 1 + previewableItems.length) % previewableItems.length;
-                }
+                if (e.key === 'ArrowRight') nextIndex = (currentItemIndex + 1) % previewableItems.length;
+                else if (e.key === 'ArrowLeft') nextIndex = (currentItemIndex - 1 + previewableItems.length) % previewableItems.length;
                 selectAndPreviewItem(nextIndex);
             }
         });
 
-        function selectAndPreviewItem(index) {
+        async function selectAndPreviewItem(index) {
             if (index < 0 || index >= previewableItems.length) return;
-
             currentItemIndex = index;
             const li = previewableItems[index];
 
             const previouslySelected = document.querySelector('#tree-container .selected');
-            if (previouslySelected) {
-                previouslySelected.classList.remove('selected');
-            }
+            if (previouslySelected) previouslySelected.classList.remove('selected');
             li.classList.add('selected');
-            
             li.scrollIntoView({ behavior: 'auto', block: 'nearest' });
             
-            showPreview(li.file);
+            const file = await getFileFromLi(li);
+            if (file) showPreview(file);
         }
 
-        function showPreview(file) {
-            if (thumbnailObserver) {
-                thumbnailObserver.disconnect();
-                thumbnailObserver = null;
-            }
+        async function showPreview(file) {
+            if (thumbnailObserver) thumbnailObserver.disconnect();
             document.title = file.name;
-            if (activeObjectUrl) {
-                URL.revokeObjectURL(activeObjectUrl);
-                activeObjectUrl = null;
-            }
+            if (activeObjectUrl) URL.revokeObjectURL(activeObjectUrl);
             previewContainer.innerHTML = '';
             previewContainer.className = 'view-mode-single';
 
@@ -398,47 +417,45 @@
                 activeObjectUrl = URL.createObjectURL(file);
                 video.src = activeObjectUrl;
                 previewContainer.appendChild(video);
-
-                const playPromise = video.play();
-                if (playPromise !== undefined) {
-                    playPromise.catch(error => {
-                        video.muted = true;
-                        video.play();
-                    });
-                }
+                video.play().catch(() => { video.muted = true; video.play(); });
             } else {
                 previewContainer.innerHTML = `<p>Preview not available for ${file.name} (${type || 'unknown type'}).</p>`;
             }
         }
         
-        function showFolderGrid(folderLi, selectedFileLi = null) {
-            if (thumbnailObserver) {
-                thumbnailObserver.disconnect();
-            }
+        async function showFolderGrid(folderLi, selectedFileLi = null) {
+            if (thumbnailObserver) thumbnailObserver.disconnect();
             previewContainer.innerHTML = '';
             previewContainer.className = 'view-mode-grid';
             
             const gridContainer = document.createElement('div');
             gridContainer.className = 'grid-container';
-
             const childItems = Array.from(folderLi.querySelector('ul').children);
-            const mediaItems = childItems.filter(li => li.file && (li.file.type.startsWith('image/') || li.file.type.startsWith('video/')));
+            const mediaItems = childItems.filter(li => isModernApi ? (li.handle?.kind === 'file') : (li.node?.type === 'file'));
             
-            if (mediaItems.length === 0) {
+            const previewableMediaItems = [];
+            for(const item of mediaItems) {
+                const file = await getFileFromLi(item);
+                if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
+                    previewableMediaItems.push(item);
+                }
+            }
+            
+            if (previewableMediaItems.length === 0) {
                 previewContainer.className = 'view-mode-single';
                 previewContainer.innerHTML = '<p>No previewable files in this folder.</p>';
                 return;
             }
 
-            thumbnailObserver = new IntersectionObserver((entries, observer) => {
-                entries.forEach(entry => {
+            thumbnailObserver = new IntersectionObserver((entries) => {
+                entries.forEach(async entry => {
                     if (entry.isIntersecting) {
                         const gridItem = entry.target;
-                        const file = gridItem.fileLi.file;
-                        
+                        thumbnailObserver.unobserve(gridItem);
+                        const file = await getFileFromLi(gridItem.fileLi);
+                        if (!file) return;
                         let mediaElement;
-                        const type = file.type;
-                        if (type.startsWith('image/')) {
+                        if (file.type.startsWith('image/')) {
                             mediaElement = document.createElement('img');
                         } else {
                             mediaElement = document.createElement('video');
@@ -449,12 +466,11 @@
                         }
                         mediaElement.src = URL.createObjectURL(file);
                         gridItem.appendChild(mediaElement);
-                        observer.unobserve(gridItem);
                     }
                 });
             }, { root: previewContainer, rootMargin: '0px 0px 200px 0px' });
 
-            mediaItems.forEach(li => {
+            previewableMediaItems.forEach(li => {
                 const gridItem = document.createElement('div');
                 gridItem.className = 'grid-item';
                 gridItem.fileLi = li;
@@ -466,23 +482,40 @@
                 const gridItem = e.target.closest('.grid-item');
                 if (gridItem) {
                     const index = previewableItems.findIndex(item => item === gridItem.fileLi);
-                    if (index !== -1) {
-                        selectAndPreviewItem(index);
-                    }
+                    if (index !== -1) selectAndPreviewItem(index);
                 }
             });
 
             previewContainer.appendChild(gridContainer);
-
             if (selectedFileLi) {
-                const gridItems = Array.from(gridContainer.querySelectorAll('.grid-item'));
-                const selectedGridItem = gridItems.find(item => item.fileLi === selectedFileLi);
+                const selectedGridItem = Array.from(gridContainer.querySelectorAll('.grid-item')).find(item => item.fileLi === selectedFileLi);
                 if (selectedGridItem) {
                     selectedGridItem.classList.add('selected');
                     selectedGridItem.scrollIntoView({ behavior: 'auto', block: 'nearest' });
                 }
             }
         }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.showDirectoryPicker) {
+                isModernApi = true;
+                selectFolderBtn.style.display = 'block';
+                selectFolderBtn.addEventListener('click', async () => {
+                    try {
+                        const handle = await window.showDirectoryPicker();
+                        await buildTreeFromSource(handle);
+                    } catch (err) {
+                        if (err.name !== 'AbortError') console.error("Error picking directory:", err);
+                    }
+                });
+            } else {
+                isModernApi = false;
+                folderPickerLabel.style.display = 'block';
+                folderPickerInput.addEventListener('change', (e) => {
+                    if (e.target.files.length) buildTreeFromSource(e.target.files);
+                });
+            }
+        });
     </script>
 </body>
 </html>
