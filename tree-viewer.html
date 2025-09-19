@@ -58,6 +58,26 @@
         #folder-picker-input {
             display: none;
         }
+        #sort-controls {
+            display: none;
+            padding: 10px;
+            border-bottom: 1px solid var(--border-color);
+            gap: 10px;
+            align-items: center;
+            font-size: 14px;
+        }
+        #sort-controls label {
+            flex-shrink: 0;
+        }
+        #sort-controls select {
+            background-color: var(--button-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 5px;
+            flex-grow: 1;
+            min-width: 0;
+        }
         #tree-container {
             flex-grow: 1;
             overflow-y: auto;
@@ -164,6 +184,17 @@
             <button id="select-folder-btn">Select Folder</button>
             <label id="folder-picker-label" for="folder-picker-input">Select Folder</label>
             <input type="file" id="folder-picker-input" webkitdirectory>
+            <div id="sort-controls">
+                <label for="sort-by">Sort by:</label>
+                <select id="sort-by">
+                    <option value="name">Name</option>
+                    <option value="date">Date Modified</option>
+                </select>
+                <select id="sort-order">
+                    <option value="asc">Ascending</option>
+                    <option value="desc">Descending</option>
+                </select>
+            </div>
             <div id="tree-container"></div>
         </div>
         <div id="preview-container" class="view-mode-single">
@@ -176,6 +207,9 @@
         const folderPickerLabel = document.getElementById('folder-picker-label');
         const treeContainer = document.getElementById('tree-container');
         const previewContainer = document.getElementById('preview-container');
+        const sortControls = document.getElementById('sort-controls');
+        const sortBySelect = document.getElementById('sort-by');
+        const sortOrderSelect = document.getElementById('sort-order');
         const originalTitle = document.title;
         
         let isModernApi = false;
@@ -183,12 +217,58 @@
         let previewableItems = [];
         let currentItemIndex = -1;
         let thumbnailObserver = null;
-        
+        let sortBy = 'name';
+        let sortOrder = 'asc';
+
         const ignoreNames = new Set([
             '$RECYCLE.BIN',
             'System Volume Information',
             'Thumbs.db'
         ]);
+
+        function getSorter() {
+            return (a, b) => {
+                const aIsFolder = a.classList.contains('folder');
+                const bIsFolder = b.classList.contains('folder');
+
+                if (aIsFolder !== bIsFolder) {
+                    return aIsFolder ? -1 : 1;
+                }
+
+                let comparison = 0;
+                if (sortBy === 'name' || aIsFolder) {
+                    const aName = isModernApi ? a.handle.name : a.node.name;
+                    const bName = isModernApi ? b.handle.name : b.node.name;
+                    comparison = aName.localeCompare(bName, undefined, { numeric: true });
+                } else {
+                    const aDate = parseInt(a.dataset.lastModified || '0', 10);
+                    const bDate = parseInt(b.dataset.lastModified || '0', 10);
+                    comparison = aDate - bDate;
+                }
+                
+                return sortOrder === 'asc' ? comparison : -comparison;
+            };
+        }
+
+        function resortTree() {
+            const uls = treeContainer.querySelectorAll('ul');
+            const sorter = getSorter();
+            uls.forEach(ul => {
+                const children = Array.from(ul.children);
+                children.sort(sorter);
+                children.forEach(li => ul.appendChild(li));
+            });
+        }
+        
+        sortBySelect.addEventListener('change', (e) => {
+            sortBy = e.target.value;
+            resortTree();
+        });
+
+        sortOrderSelect.addEventListener('change', (e) => {
+            sortOrder = e.target.value;
+            resortTree();
+        });
 
         function clearUIState() {
             document.title = originalTitle;
@@ -197,6 +277,7 @@
             previewContainer.innerHTML = '<p>Select a file to preview.</p>';
             previewableItems = [];
             currentItemIndex = -1;
+            sortControls.style.display = 'none';
         }
 
         async function getFileFromLi(li) {
@@ -221,7 +302,8 @@
         async function buildTreeFromSource(source) {
             clearUIState();
             if (isModernApi) {
-                const rootLi = await modern_createTreeElement(source);
+                const rootData = { handle: source, lastModified: null };
+                const rootLi = modern_createTreeElement(rootData);
                 rootLi.classList.add('expanded');
                 const rootUl = document.createElement('ul');
                 rootUl.style.paddingLeft = '0';
@@ -233,6 +315,7 @@
                 const rootNode = fallback_buildFileTree(source);
                 fallback_renderTree(rootNode, treeContainer);
             }
+            sortControls.style.display = 'flex';
             await updatePreviewableItems();
         }
 
@@ -290,22 +373,32 @@
                 entryName.appendChild(nameSpan);
                 li.appendChild(entryName);
                 const ul = document.createElement('ul');
-                Object.values(node.children)
-                    .sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, undefined, { numeric: true }))
-                    .forEach(childNode => ul.appendChild(fallback_createTreeElement(childNode)));
+                
+                const childLiElements = Object.values(node.children).map(childNode => fallback_createTreeElement(childNode));
+                childLiElements.sort(getSorter());
+                childLiElements.forEach(childLi => ul.appendChild(childLi));
+                
                 li.appendChild(ul);
             } else {
                 li.classList.add('file');
                 li.file = node.file;
+                if (node.file) {
+                    li.dataset.lastModified = node.file.lastModified;
+                }
                 entryName.appendChild(nameSpan);
                 li.appendChild(entryName);
             }
             return li;
         }
 
-        async function modern_createTreeElement(handle) {
+        function modern_createTreeElement(entryData) {
+            const { handle, lastModified } = entryData;
             const li = document.createElement('li');
             li.handle = handle;
+            if (lastModified) {
+                li.dataset.lastModified = lastModified;
+            }
+            
             const entryName = document.createElement('span');
             entryName.className = 'entry-name';
             const nameSpan = document.createElement('span');
@@ -330,16 +423,26 @@
         }
 
         async function modern_populateDirectory(directoryHandle, parentUl) {
-            const entries = [];
+            const entriesWithData = [];
             for await (const entry of directoryHandle.values()) {
                 if (!entry.name.startsWith('.') && !ignoreNames.has(entry.name)) {
-                    entries.push(entry);
+                    let lastModified = null;
+                    if (entry.kind === 'file') {
+                        try {
+                            const file = await entry.getFile();
+                            lastModified = file.lastModified;
+                        } catch (e) {
+                            console.warn(`Could not get file for ${entry.name}`, e);
+                        }
+                    }
+                    entriesWithData.push({ handle: entry, lastModified });
                 }
             }
-            entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-            for (const entry of entries) {
-                const li = await modern_createTreeElement(entry);
+            const liElements = entriesWithData.map(modern_createTreeElement);
+            liElements.sort(getSorter());
+
+            for (const li of liElements) {
                 parentUl.appendChild(li);
             }
             parentUl.dataset.loaded = 'true';
